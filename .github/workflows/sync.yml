@@ -1,25 +1,26 @@
-name: Upstream Sync
+name: Upstream Sync and Merge
 
 permissions:
   contents: write
 
 on:
   schedule:
-    - cron: "0 4 * * *" # At 12PM UTC+8
+    - cron: "0 4 * * *" # 每天北京时间中午12点
   workflow_dispatch:
 
 jobs:
-  sync_latest_from_upstream:
-    name: Sync latest commits from upstream repo
+  # --- 第一个任务：从上游同步到你的 main 分支 ---
+  sync_upstream:
+    name: Sync latest commits from upstream
     runs-on: ubuntu-latest
     if: ${{ github.event.repository.fork }}
 
     steps:
-      # Step 1: run a standard checkout action
-      - name: Checkout target repo
+      - name: Checkout target repo (main branch)
         uses: actions/checkout@v4
-
-      # Step 2: run the sync action
+        with:
+          ref: 'main' # 明确检出 main 分支
+          
       - name: Sync upstream changes
         id: sync
         uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.1
@@ -29,8 +30,38 @@ jobs:
           target_sync_branch: main
           target_repo_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Sync check
-        if: failure()
+  # --- 第二个任务：将 main 分支的更新合并到 dev 分支 ---
+  merge_to_dev:
+    name: Merge main into dev
+    runs-on: ubuntu-latest
+    needs: sync_upstream # 关键：确保这个任务在 sync_upstream 成功后才运行
+
+    steps:
+      - name: Checkout target repo (all branches)
+        uses: actions/checkout@v4
+        with:
+          # 需要 Personal Access Token (PAT) 来触发后续的部署（如Vercel）
+          # 如果你不需要触发其他 Action，可以换成 GITHUB_TOKEN
+          token: ${{ secrets.GITHUB_TOKEN }} 
+          fetch-depth: 0 # 获取所有历史记录，以便合并
+
+      - name: Configure Git
         run: |
-          echo "[Error] Due to a change in the workflow file of the upstream repository, GitHub has automatically suspended the scheduled automatic update. You need to manually sync your fork."
-          exit 1
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Merge main into dev
+        run: |
+          git switch dev
+          git pull origin dev # 确保本地dev分支是最新
+          # 尝试合并，-m 指定合并的提交信息
+          if git merge origin/main -m "chore: Auto-merge upstream updates"; then
+            echo "Merge successful."
+          else
+            echo "Merge conflict detected! Please resolve it manually."
+            # 如果你希望在冲突时让Action失败，可以取消下面一行的注释
+            exit 1 
+          fi
+
+      - name: Push changes to dev
+        run: git push origin dev
